@@ -1,3 +1,4 @@
+require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -7,10 +8,18 @@ const {
 } = require('@discordjs/voice');
 const prism = require('prism-media');
 const { pipeline, env } = require('@huggingface/transformers');
-require('dotenv').config()
+const {
+  describeScene, generateImage, startLmStudio, startImageServer, stopImageServer, checkServices,
+} = require('./illustration');
+
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.error('Définissez DISCORD_TOKEN avant de démarrer le bot.');
+  process.exit(1);
+}
+const autoImageMinutes = Number(process.env.AUTO_IMAGE_MINUTES || 5);
+if (!(autoImageMinutes >= 0)) {
+  console.error('AUTO_IMAGE_MINUTES doit être un nombre de minutes (0 pour désactiver).');
   process.exit(1);
 }
 
@@ -98,6 +107,15 @@ function formatEntry({ startedAt, speaker, text }) {
   return `[${startedAt.toLocaleTimeString('fr-FR')}] ${speaker} : ${text}\n`;
 }
 
+function addEntry(session, entry) {
+  session.entries.push(entry);
+  try {
+    fs.appendFileSync(session.file, formatEntry(entry));
+  } catch (error) {
+    console.error('Écriture de la transcription impossible :', error.message);
+  }
+}
+
 async function record(session, userId, startedAt, pcm) {
   if (!pcm.length) return;
   let text;
@@ -109,13 +127,60 @@ async function record(session, userId, startedAt, pcm) {
   }
   if (!text) return;
   const member = await session.guild.members.fetch(userId).catch(() => null);
-  const entry = { startedAt, speaker: member?.displayName ?? userId, text };
-  session.entries.push(entry);
-  try {
-    fs.appendFileSync(session.file, formatEntry(entry));
-  } catch (error) {
-    console.error('Écriture de la transcription impossible :', error.message);
-  }
+  addEntry(session, { startedAt, speaker: member?.displayName ?? userId, text });
+  maybeIllustrate(session);
+}
+
+function recentTranscript(session, since) {
+  const lines = session.entries
+    .filter((entry) => !entry.image && entry.startedAt >= since)
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map(formatEntry);
+  let text = '';
+  for (let i = lines.length - 1; i >= 0 && text.length + lines[i].length <= 4000; i--) text = lines[i] + text;
+  return text;
+}
+
+async function illustrate(session, request) {
+  const since = request === undefined ? session.lastImageAt : 0;
+  const scene = await describeScene({
+    transcript: recentTranscript(session, since), lastCaption: session.lastCaption, request,
+  });
+  if (!scene.illustrate) return;
+  if (!scene.prompt) throw new Error('le modèle n’a pas décrit la scène');
+  const image = await generateImage(scene.prompt);
+  const at = new Date();
+  const caption = scene.caption || 'Illustration';
+  const name = `${path.basename(session.file, '.txt')}_${pad(at.getHours())}-${pad(at.getMinutes())}-${pad(at.getSeconds())}.png`;
+  fs.writeFileSync(path.join(transcriptsDir, name), image);
+  session.lastImageAt = at.getTime();
+  session.lastCaption = caption;
+  addEntry(session, { startedAt: at, speaker: 'Illustration', text: `${caption} (${name})`, image: true });
+  await session.textChannel.send({ content: `🎨 ${caption}`, files: [{ attachment: image, name }] });
+}
+
+function startIllustration(session, request) {
+  const task = illustrate(session, request)
+    .catch((error) => {
+      console.error('Illustration impossible :', error.message);
+      if (request === undefined) return undefined;
+      return session.textChannel.send('L’illustration a échoué. Vérifiez que LM Studio et le serveur d’images sont lancés.')
+        .catch(() => {});
+    })
+    .finally(() => {
+      session.illustrating = null;
+    });
+  session.illustrating = task;
+  session.tasks.add(task);
+  void task.then(() => session.tasks.delete(task));
+}
+
+function maybeIllustrate(session) {
+  const now = Date.now();
+  if (!autoImageMinutes || session.stopped || session.illustrating) return;
+  if (now - session.lastImageAt < autoImageMinutes * 60000 || now - session.lastCheckAt < 60000) return;
+  session.lastCheckAt = now;
+  startIllustration(session);
 }
 
 async function saveTranscript(session) {
@@ -213,18 +278,33 @@ function captureSpeech(session, userId) {
 
 async function handleMessage(message) {
   if (!message.guild || message.author.bot) return;
-  const command = message.content.trim().toLowerCase();
-  if (command !== '!transcription rejoindre' && command !== '!transcription quitter') return;
+  const content = message.content.trim();
+  const command = content.toLowerCase();
+  const imageCommand = command === '!transcription image' || command.startsWith('!transcription image ');
+  if (!imageCommand && command !== '!transcription rejoindre' && command !== '!transcription quitter') return;
 
   const voiceChannel = message.member?.voice.channel;
   const existing = sessions.get(message.guild.id);
+  if (imageCommand) {
+    if (!existing?.file) return message.reply('Aucune transcription en cours.');
+    if (!voiceChannel || voiceChannel.id !== existing.voiceChannelId) {
+      return message.reply('Vous devez être dans le salon vocal transcrit pour demander une illustration.');
+    }
+    if (existing.illustrating) return message.reply('Une illustration est déjà en cours, réessayez dans un instant.');
+    const request = content.slice('!transcription image'.length).trim();
+    if (!request && !existing.entries.some((entry) => !entry.image)) {
+      return message.reply('Rien à illustrer pour l’instant : aucune intervention transcrite.');
+    }
+    startIllustration(existing, request);
+    return message.reply(`Illustration en préparation, elle sera publiée dans ${existing.textChannel}.`);
+  }
   if (command === '!transcription quitter') {
     if (!existing) return message.reply('Aucune transcription en cours.');
     if (!voiceChannel || voiceChannel.id !== existing.voiceChannelId) {
       return message.reply('Vous devez être dans le salon vocal transcrit pour arrêter la transcription.');
     }
     stop(existing);
-    return message.reply(`Transcription arrêtée. Le fichier sera envoyé dans ${existing.textChannel} une fois les derniers passages transcrits.`);
+    return message.reply(`Transcription arrêtée. Le fichier sera envoyé dans ${existing.textChannel} une fois les derniers passages traités.`);
   }
 
   if (!voiceChannel) return message.reply('Rejoignez d’abord un salon vocal.');
@@ -249,6 +329,10 @@ async function handleMessage(message) {
     tasks: new Set(),
     entries: [],
     file: null,
+    illustrating: null,
+    lastImageAt: 0,
+    lastCheckAt: 0,
+    lastCaption: '',
     header: `Transcription du salon vocal « ${voiceChannel.name} » (${message.guild.name})\n`
       + `Début : ${startedAt.toLocaleString('fr-FR')}\n\n`,
   };
@@ -264,7 +348,8 @@ async function handleMessage(message) {
     if (session.stopped) return;
     fs.writeFileSync(file, session.header, { flag: 'wx' });
     session.file = file;
-    await message.reply('Transcription active. Les propos sont transcrits localement et le fichier texte sera envoyé dans ce salon à la fin de la session ; assurez-vous que tous les participants y consentent.');
+    await message.reply('Transcription active. Les propos sont transcrits localement et le fichier texte sera envoyé dans ce salon à la fin de la session ; assurez-vous que tous les participants y consentent. '
+      + `Envoyez \`!transcription image\` pour illustrer la scène en cours${autoImageMinutes ? ' ; les moments forts sont aussi illustrés automatiquement' : ''}.`);
     if (session.stopped) return;
     connection.receiver.speaking.on('start', (userId) => captureSpeech(session, userId));
     for (const userId of connection.receiver.speaking.users.keys()) captureSpeech(session, userId);
@@ -285,13 +370,27 @@ client.once(Events.ClientReady, (readyClient) => {
 
 async function main() {
   fs.mkdirSync(transcriptsDir, { recursive: true });
+  const services = Promise.all([startLmStudio(), startImageServer()]);
   console.log(`Chargement du modèle ${model} (${device})…`);
   transcriber = await loadTranscriber();
   console.log('Modèle de transcription prêt.');
+  await services;
+  const problems = await checkServices();
+  for (const problem of problems) console.warn(problem);
   await client.login(token);
 }
 
+// SIGHUP : fermeture de la fenêtre de console sous Windows.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    stopImageServer();
+    process.exit(0);
+  });
+}
+process.on('exit', stopImageServer);
+
 main().catch((error) => {
   console.error('Démarrage impossible :', error.message);
+  stopImageServer();
   process.exitCode = 1;
 });

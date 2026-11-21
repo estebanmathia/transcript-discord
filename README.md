@@ -2,7 +2,8 @@
 
 Bot qui rejoint un salon vocal Discord, transcrit les interventions avec leur
 auteur **sur votre ordinateur** (Whisper, sans service externe) et produit un
-fichier texte par session, envoyé dans le salon textuel à la fin.
+fichier texte par session, envoyé dans le salon textuel à la fin. En option,
+il illustre les parties de jeu de rôle avec des images générées localement.
 
 ## Installation
 
@@ -33,6 +34,9 @@ nécessaire.
    export DISCORD_TOKEN="votre-token-discord"
    npm start
    ```
+
+   Vous pouvez aussi placer `DISCORD_TOKEN=votre-token-discord` (et les autres
+   variables ci-dessous) dans un fichier `.env` à la racine du projet.
 
 Ne partagez pas ce token et ne l'ajoutez pas au dépôt.
 
@@ -81,12 +85,82 @@ Fin : 21/11/2026 16:00:00
 
 La reconnaissance vocale peut comporter des erreurs.
 
+## Illustrations de jeu de rôle (optionnel)
+
+Pendant une partie, un modèle de langage local relit la transcription récente,
+repère les moments forts de la fiction (nouveau lieu, créature, action
+spectaculaire) en ignorant le hors-jeu, puis rédige la description d'une image
+générée par Stable Diffusion. L'image est publiée dans le salon textuel avec sa
+légende, enregistrée dans `transcripts/` à côté de la transcription, et
+mentionnée dans celle-ci :
+
+```text
+[21:02:58] Illustration : Une liche couronnée surgit d'un sarcophage. (2026-11-21_21-00-00_Général_21-02-58.png)
+```
+
+Le bot vérifie au plus une fois par minute s'il faut illustrer, avec au moins
+`AUTO_IMAGE_MINUTES` minutes entre deux images automatiques. Depuis le salon
+vocal, `!transcription image` illustre aussitôt la scène en cours ; ajoutez une
+indication pour orienter l'image, par exemple
+`!transcription image Borin face au dragon`.
+
+Deux serveurs locaux sont nécessaires ; sans eux, la transcription fonctionne
+normalement et le bot signale au démarrage que les illustrations sont
+indisponibles.
+
+1. **[LM Studio](https://lmstudio.ai/)** : téléchargez une fois le modèle avec
+   `lms get google/gemma-4-e4b`. Au démarrage, le bot lance lui-même le
+   serveur LM Studio et charge le modèle s'il ne l'est pas déjà. Par défaut, il
+   le charge sur le processeur (`LLM_GPU=off`) : avec une carte graphique de
+   12 Go, Whisper et Stable Diffusion ont besoin de sa mémoire, sinon la
+   génération d'image se bloque.
+2. **[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp/releases)** :
+   pour une carte NVIDIA, extrayez dans un même dossier l'archive
+   `sd-…-bin-win-cuda12-x64.zip` et `cudart-sd-bin-win-cu12-x64.zip`.
+   Téléchargez un modèle SDXL (par exemple `sd_xl_base_1.0.safetensors`) et le
+   VAE [`sdxl_vae.safetensors`](https://huggingface.co/madebyollin/sdxl-vae-fp16-fix)
+   recommandé par stable-diffusion.cpp pour SDXL. Créez à côté de `start-server.bat`
+   un fichier `start-server.local.bat` en adaptant les chemins :
+
+   ```bat
+   @echo off
+   set "MODEL_DIR=%~dp0models"
+   set "COMMANDLINE_ARGS=-m C:\chemin\sd_xl_base_1.0.safetensors --vae C:\chemin\sdxl_vae.safetensors --listen-port 7860 --offload-to-cpu --type q8_0 --vae-tiling --sampling-method dpm++2m --scheduler karras --steps 25 --cfg-scale 6.5 -W 1216 -H 832"
+   ```
+
+   `--offload-to-cpu`, `--type q8_0` et `--vae-tiling` limitent la mémoire
+   graphique utilisée (environ 3,6 Go pendant la génération). Indiquez ensuite
+   le chemin de `start-server.bat` dans `SD_SERVER` (par exemple
+   `SD_SERVER=D:\stable-diffusion.cpp\start-server.bat` dans `.env`) : le bot
+   démarre alors le serveur en arrière-plan et l'arrête quand il s'éteint
+   (Ctrl+C, fermeture de la fenêtre ou erreur). Sans cette variable, lancez
+   `start-server.bat` vous-même. Avec une RTX 3060, il faut
+   environ 30 secondes au modèle de langage pour décider et décrire la scène,
+   puis environ 40 secondes pour l'image ; la première image après le
+   démarrage est plus longue, le temps de charger SDXL.
+
+Pour des images cohérentes, copiez `campagne.exemple.txt` en `campagne.txt` et
+décrivez l'univers, les personnages des joueurs (associés à leur pseudo
+Discord) et les lieux importants. Le fichier est relu avant chaque illustration.
+
+| Variable | Par défaut | Rôle |
+| --- | --- | --- |
+| `AUTO_IMAGE_MINUTES` | `5` | Délai minimal entre deux images automatiques ; `0` les désactive. |
+| `LLM_URL` | `http://127.0.0.1:1234/v1` | API compatible OpenAI de LM Studio. |
+| `LLM_MODEL` | `google/gemma-4-e4b` | Modèle LM Studio qui choisit et décrit les scènes. |
+| `LLM_GPU` | `off` | Part du modèle chargée sur la carte graphique au démarrage : `off`, `max` ou une fraction comme `0.5`. |
+| `SD_URL` | `http://127.0.0.1:7860` | Serveur d'images compatible avec l'API `/sdapi/v1/txt2img`. |
+| `SD_SERVER` | aucun | Script de lancement du serveur d'images, démarré et arrêté avec le bot s'il ne répond pas déjà. |
+| `IMAGE_STYLE` | `fantasy illustration, digital painting, dramatic lighting, highly detailed` | Style ajouté à chaque description d'image. |
+| `CAMPAIGN_FILE` | `campagne.txt` | Fichier de contexte de campagne, relatif au projet. |
+
 ## Confidentialité
 
 **Informez tous les participants et obtenez leur consentement avant de démarrer
 la transcription**, notamment lorsque quelqu'un rejoint le salon en cours de
 session. L'audio est transcrit sur l'ordinateur qui exécute le bot et n'est
-envoyé à aucun service externe ; il n'est pas enregistré. Les fichiers de
-transcription sont conservés dans le dossier `transcripts/` (exclu de Git) et
-publiés dans le salon Discord choisi, où ils restent soumis à ses permissions
-et à sa politique de conservation.
+envoyé à aucun service externe ; il n'est pas enregistré. Les illustrations
+sont elles aussi produites localement (LM Studio et stable-diffusion.cpp). Les
+fichiers de transcription et les images sont conservés dans le dossier
+`transcripts/` (exclu de Git) et publiés dans le salon Discord choisi, où ils
+restent soumis à ses permissions et à sa politique de conservation.
