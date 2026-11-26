@@ -24,10 +24,13 @@ function addEntry(session, entry) {
   }
 }
 
-// Dernières interventions parlées depuis `since` (sans les illustrations), limitées à 4000 caractères.
+// Intervention parlée, par opposition aux lignes d'illustration et de jets de dés.
+const isSpeech = (entry) => !entry.image && !entry.roll;
+
+// Dernières interventions parlées depuis `since`, limitées à 4000 caractères.
 function recentTranscript(session, since) {
   const lines = session.entries
-    .filter((entry) => !entry.image && entry.startedAt >= since)
+    .filter((entry) => isSpeech(entry) && entry.startedAt >= since)
     .sort((a, b) => a.startedAt - b.startedAt)
     .map(formatEntry);
   let text = '';
@@ -36,5 +39,5 @@ function recentTranscript(session, since) {
 }
 
 module.exports = {
-  pad, fileName, formatEntry, addEntry, recentTranscript,
+  pad, fileName, formatEntry, addEntry, isSpeech, recentTranscript,
 };

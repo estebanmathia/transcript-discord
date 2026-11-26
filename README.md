@@ -16,10 +16,13 @@ nécessaire.
    privilégiée **Message Content Intent** et enregistrez.
 2. Dans l'onglet **OAuth2**, cochez `bot` dans le générateur d'URL, puis les
    permissions **Voir les salons**, **Envoyer des messages**,
+   **Intégrer des liens** (pour afficher les résultats de dés),
    **Joindre des fichiers**, **Voir les anciens messages** (indispensable pour
    répondre aux commandes) et **Se connecter**. Ouvrez l'URL générée pour
    inviter le bot sur le serveur. L'URL équivalente est
-   `https://discord.com/oauth2/authorize?client_id=VOTRE_ID&permissions=1149952&scope=bot`.
+   `https://discord.com/oauth2/authorize?client_id=VOTRE_ID&permissions=1166336&scope=bot`.
+   Si le bot est déjà sur le serveur, ajoutez simplement **Intégrer des liens**
+   à son rôle.
 3. Installez les dépendances avec `npm ci`.
 4. Configurez le token et démarrez le bot :
 
@@ -84,6 +87,42 @@ Fin : 21/11/2026 16:00:00
 ```
 
 La reconnaissance vocale peut comporter des erreurs.
+
+## Lancer les dés
+
+Envoyez `!roll` (ou `!r`) suivi d'une notation de dés dans n'importe quel salon
+textuel du serveur, avec ou sans transcription en cours :
+
+| Commande | Effet |
+| --- | --- |
+| `!roll` | 1d20 |
+| `!roll 2d12+2` | deux d12, plus 2 |
+| `!roll 1d20+5 attaque` | le texte après la notation devient le motif du jet |
+| `!roll 1d20+1d4-1` | plusieurs dés et nombres, additionnés ou soustraits |
+| `!roll 2d20kh1` / `!roll 2d20kl1` | avantage / désavantage : garde le plus haut (`kh`) ou le plus bas (`kl`) |
+| `!roll 4d6kh3` | garde les 3 meilleurs dés sur 4 |
+| `!roll d%` | 1d100 |
+
+Une notation accepte jusqu'à 100 dés de 2 à 1000 faces. Le bot répond par un
+encadré dont la couleur et la phrase suivent le résultat : or pour un 20 naturel
+ou le score maximal, vert, bleu, orange puis rouge selon la qualité du jet, et
+rouge foncé pour un 1 naturel ou le score minimal. Les 20 et 1 naturels sont
+reconnus quand le jet garde un seul d20 (`1d20+5`, `2d20kh1`…).
+
+Pendant une transcription, chaque jet est aussi noté dans le fichier (le modèle
+qui choisit les illustrations ne voit pas ces lignes) :
+
+```text
+[21:05:12] Dés : Alice lance 2d12+2 → [7, 11] + 2 = 20 (attaque)
+```
+
+À la fin de la séance, après le fichier de transcription, le bot publie les
+statistiques de chaque joueur (nombre de jets, 20 et 1 naturels, meilleur jet)
+et un graphique de leur chance moyenne. La chance d'un jet est sa position entre
+le minimum et le maximum possibles : 50 % correspond au résultat moyen attendu.
+Le graphique est aussi enregistré dans `transcripts/`, par exemple
+`transcripts/2026-11-21_15-02-10_Général_des.png`. Les jets faits hors
+transcription ne sont pas comptés.
 
 ## Illustrations de jeu de rôle (optionnel)
 
@@ -175,7 +214,14 @@ src/
 ├── config.js              tous les réglages lus dans l'environnement (.env)
 ├── discord/
 │   ├── client.js          client Discord et événements
-│   └── commands.js        commandes !transcription
+│   ├── commands.js        commandes !transcription et aiguillage de !roll
+│   └── dice-command.js    commande !roll / !r
+├── dice/
+│   ├── notation.js        notation des dés (2d12+2, 2d20kh1…) et tirage
+│   ├── outcome.js         qualité d'un jet : chance, 20/1 naturels, palier
+│   ├── embed.js           réponse au joueur (encadré coloré)
+│   ├── stats.js           statistiques de la séance
+│   └── chart.js           graphique de fin de séance (SVG → PNG)
 ├── session/
 │   ├── sessions.js        sessions actives : démarrer, arrêter, sauvegarder
 │   ├── capture.js         réception audio de chaque intervention
@@ -190,4 +236,5 @@ src/
     └── http.js            requête POST vers les serveurs locaux
 examples/
 └── campagne.exemple.txt   modèle de fichier de campagne
+test/                      tests (npm test)
 ```

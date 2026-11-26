@@ -7,6 +7,7 @@ const {
 const { transcriptsDir, autoImageMinutes } = require('../config');
 const { fileName, formatEntry } = require('./transcript');
 const { captureSpeech } = require('./capture');
+const { sendDiceStats } = require('../dice/stats');
 
 // Sessions actives, indexées par identifiant de serveur.
 const sessions = new Map();
@@ -23,6 +24,13 @@ async function saveTranscript(session) {
   } catch (error) {
     console.error('Enregistrement ou envoi de la transcription impossible :', error.message);
     await session.textChannel.send('Le fichier de transcription n’a pas pu être envoyé. Vérifiez les journaux du bot.')
+      .catch(() => {});
+  }
+  try {
+    await sendDiceStats(session);
+  } catch (error) {
+    console.error('Envoi des statistiques de dés impossible :', error.message);
+    await session.textChannel.send('Les statistiques de dés n’ont pas pu être envoyées. Vérifiez les journaux du bot.')
       .catch(() => {});
   }
 }
@@ -52,7 +60,9 @@ async function startSession(message, voiceChannel) {
     guild: message.guild,
     guildId: message.guild.id,
     voiceChannelId: voiceChannel.id,
+    voiceChannelName: voiceChannel.name,
     textChannel: message.channel,
+    startedAt,
     connection,
     stopped: false,
     captures: new Map(),
@@ -63,6 +73,7 @@ async function startSession(message, voiceChannel) {
     lastImageAt: 0,
     lastCheckAt: 0,
     lastCaption: '',
+    dice: new Map(), // statistiques de dés par joueur (voir dice/stats.js)
     header: `Transcription du salon vocal « ${voiceChannel.name} » (${message.guild.name})\n`
       + `Début : ${startedAt.toLocaleString('fr-FR')}\n\n`,
   };
