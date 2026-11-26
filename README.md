@@ -139,7 +139,7 @@ indisponibles.
    puis environ 40 secondes pour l'image ; la première image après le
    démarrage est plus longue, le temps de charger SDXL.
 
-Pour des images cohérentes, copiez `campagne.exemple.txt` en `campagne.txt` et
+Pour des images cohérentes, copiez `examples/campagne.exemple.txt` à la racine du projet sous le nom `campagne.txt` et
 décrivez l'univers, les personnages des joueurs (associés à leur pseudo
 Discord) et les lieux importants. Le fichier est relu avant chaque illustration.
 
@@ -164,3 +164,30 @@ sont elles aussi produites localement (LM Studio et stable-diffusion.cpp). Les
 fichiers de transcription et les images sont conservés dans le dossier
 `transcripts/` (exclu de Git) et publiés dans le salon Discord choisi, où ils
 restent soumis à ses permissions et à sa politique de conservation.
+
+## Structure du code
+
+Chaque dossier regroupe un domaine, pour retrouver rapidement où modifier quelque chose :
+
+```text
+src/
+├── index.js               démarrage : serveurs locaux, Whisper, connexion à Discord
+├── config.js              tous les réglages lus dans l'environnement (.env)
+├── discord/
+│   ├── client.js          client Discord et événements
+│   └── commands.js        commandes !transcription
+├── session/
+│   ├── sessions.js        sessions actives : démarrer, arrêter, sauvegarder
+│   ├── capture.js         réception audio de chaque intervention
+│   └── transcript.js      fichier de transcription (nom, lignes, extrait récent)
+├── speech/
+│   └── whisper.js         reconnaissance vocale locale (Whisper)
+└── illustration/
+    ├── illustrate.js      décision et publication des illustrations
+    ├── scene.js           description de la scène (LM Studio)
+    ├── image.js           génération d'image (stable-diffusion.cpp)
+    ├── servers.js         lancement et vérification des serveurs locaux
+    └── http.js            requête POST vers les serveurs locaux
+examples/
+└── campagne.exemple.txt   modèle de fichier de campagne
+```

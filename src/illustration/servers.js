@@ -1,98 +1,16 @@
+// Serveurs locaux des illustrations : lancement de LM Studio et du serveur d'images, arrêt et vérification.
 const { execFile, execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { promisify } = require('node:util');
+const {
+  llmUrl, llmModel, llmGpu, sdUrl, sdServer,
+} = require('../config');
 
 const run = promisify(execFile);
-const llmUrl = (process.env.LLM_URL || 'http://127.0.0.1:1234/v1').replace(/\/+$/, '');
-const llmModel = process.env.LLM_MODEL || 'google/gemma-4-e4b';
-const llmGpu = process.env.LLM_GPU || 'off';
-const sdUrl = (process.env.SD_URL || 'http://127.0.0.1:7860').replace(/\/+$/, '');
-const sdServer = process.env.SD_SERVER;
-const style = process.env.IMAGE_STYLE || 'fantasy illustration, digital painting, dramatic lighting, highly detailed';
-const campaignFile = path.resolve(__dirname, '..', process.env.CAMPAIGN_FILE || 'campagne.txt');
-const negativePrompt = 'blurry, low quality, deformed, disfigured, extra limbs, text, watermark, signature';
 let imageServer = null;
-
-const instructions = `Tu es l'illustrateur d'une partie de jeu de rôle sur table jouée en vocal sur Discord.
-On te donne la transcription automatique récente (elle peut contenir des erreurs) et, si disponible, le contexte de la campagne.
-Décide si un moment marquant de la fiction mérite une illustration : arrivée dans un lieu, apparition d'une créature ou d'un personnage, action spectaculaire, révélation visuelle.
-Ignore tout ce qui est hors-jeu : règles, dés, pauses, blagues, logistique. N'illustre pas à nouveau la dernière scène déjà illustrée.
-Réponds en JSON :
-- illustrate : true seulement s'il y a un nouveau moment visuel marquant ;
-- caption : une phrase en français décrivant la scène, pour la légende ;
-- prompt : un prompt en anglais pour Stable Diffusion XL, mots-clés visuels séparés par des virgules (sujet, personnages et apparence, décor, ambiance, lumière, cadrage), sans noms propres.`;
-
-const schema = {
-  type: 'object',
-  properties: {
-    illustrate: { type: 'boolean' },
-    caption: { type: 'string' },
-    prompt: { type: 'string' },
-  },
-  required: ['illustrate', 'caption', 'prompt'],
-  additionalProperties: false,
-};
-
-async function post(url, body, timeout) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeout),
-  });
-  if (!response.ok) throw new Error(`${url} : HTTP ${response.status} ${(await response.text()).slice(0, 200)}`);
-  return response.json();
-}
-
-function readCampaign() {
-  try {
-    return fs.readFileSync(campaignFile, 'utf8').trim().slice(0, 4000);
-  } catch {
-    return '';
-  }
-}
-
-// `request` (même vide) force l'illustration : c'est une demande explicite d'un joueur.
-async function describeScene({ transcript, lastCaption, request }) {
-  const campaign = readCampaign();
-  const parts = [];
-  if (campaign) parts.push(`Contexte de la campagne :\n${campaign}`);
-  parts.push(`Dernière scène illustrée : ${lastCaption || 'aucune'}.`);
-  parts.push(`Transcription récente :\n${transcript || '(vide)'}`);
-  if (request !== undefined) {
-    parts.push('Un joueur demande une illustration maintenant : mets illustrate à true et illustre le moment le plus '
-      + `récent de la fiction${request ? `, en suivant cette indication : ${request}` : ''}.`);
-  }
-  const body = await post(`${llmUrl}/chat/completions`, {
-    model: llmModel,
-    messages: [
-      { role: 'system', content: instructions },
-      { role: 'user', content: parts.join('\n\n') },
-    ],
-    temperature: 0.3,
-    max_tokens: 400,
-    // Sans cela, Gemma 4 « réfléchit » des centaines de jetons avant de répondre.
-    reasoning_effort: 'none',
-    response_format: { type: 'json_schema', json_schema: { name: 'illustration', strict: true, schema } },
-  }, 120000);
-  const scene = JSON.parse(body.choices[0].message.content);
-  return {
-    illustrate: scene.illustrate === true || request !== undefined,
-    caption: String(scene.caption ?? '').trim(),
-    prompt: String(scene.prompt ?? '').trim(),
-  };
-}
-
-async function generateImage(prompt) {
-  const body = await post(`${sdUrl}/sdapi/v1/txt2img`, {
-    prompt: `${prompt}, ${style}`,
-    negative_prompt: negativePrompt,
-  }, 600000);
-  return Buffer.from(body.images[0], 'base64');
-}
 
 async function loadedInstances() {
   const response = await fetch(new URL('/api/v1/models', llmUrl), { signal: AbortSignal.timeout(3000) });
@@ -180,6 +98,7 @@ function stopImageServer() {
   }
 }
 
+// Vérifie les serveurs au démarrage et renvoie la liste des problèmes à signaler.
 async function checkServices() {
   const problems = [];
   try {
@@ -207,5 +126,5 @@ async function checkServices() {
 }
 
 module.exports = {
-  describeScene, generateImage, startLmStudio, startImageServer, stopImageServer, checkServices,
+  startLmStudio, startImageServer, stopImageServer, checkServices,
 };
